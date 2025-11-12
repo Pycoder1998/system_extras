@@ -182,6 +182,16 @@ bool IsKernelEventSupported() {
   return IsEventAttrSupported(attr, type->name);
 }
 
+static bool IsKernelUsingContiguousAuxBuffer() {
+  // Old kernels allocates contiguous pages for AUX buffer. This is changed by kernel patch
+  // "perf/aux: Allocate non-contiguous AUX pages by default". The patch is available on Android
+  // 6.6 kernel.
+  if (auto version = GetKernelVersion(); version && version.value() < std::make_pair(6, 6)) {
+    return true;
+  }
+  return false;
+}
+
 std::string AddrFilter::ToString() const {
   switch (type) {
     case FILE_RANGE:
@@ -227,23 +237,33 @@ bool EventSelectionSet::BuildAndCheckEventSelection(const std::string& event_nam
   selection->event_attr.exclude_host = event_type->exclude_host;
   selection->event_attr.exclude_guest = event_type->exclude_guest;
   selection->event_attr.precise_ip = event_type->precise_ip;
-  if (IsEtmEventType(event_type->event_type.type)) {
+  if (event_type->event_type.IsEtmEvent()) {
     auto& etm_recorder = ETMRecorder::GetInstance();
-    if (auto result = etm_recorder.CheckEtmSupport(); !result.ok()) {
+    bool need_etr = event_type->event_type.name.find("@tmc_etr0") != std::string::npos;
+    if (auto result = etm_recorder.CheckEtmSupport(need_etr); !result.ok()) {
       LOG(ERROR) << result.error();
       return false;
     }
-    ETMRecorder::GetInstance().SetEtmPerfEventAttr(&selection->event_attr);
-    // The kernel (rb_allocate_aux) allocates high order of pages based on aux_watermark.
-    // To avoid that, use aux_watermark <= 1 page size.
-    selection->event_attr.aux_watermark = 4096;
+#if defined(__ANDROID__)
+    // To prevent KASLR disclosure, disallow recording kernel ETM data for profileable apps.
+    if (!selection->event_attr.exclude_kernel && IsInAppUid()) {
+      LOG(ERROR) << "Can't record kernel ETM data from app uid.";
+      return false;
+    }
+#endif
+    ETMRecorder::GetInstance().SetEtmPerfEventAttr(event_type->event_type, selection->event_attr);
+    if (IsKernelUsingContiguousAuxBuffer()) {
+      // The kernel (rb_allocate_aux) allocates high order of pages based on aux_watermark.
+      // To avoid that, use aux_watermark <= 1 page size.
+      selection->event_attr.aux_watermark = 4096;
+    }
   }
   bool set_default_sample_freq = false;
   if (!for_stat_cmd_) {
     if (event_type->event_type.type == PERF_TYPE_TRACEPOINT) {
       selection->event_attr.freq = 0;
       selection->event_attr.sample_period = DEFAULT_SAMPLE_PERIOD_FOR_TRACEPOINT_EVENT;
-    } else if (IsEtmEventType(event_type->event_type.type)) {
+    } else if (event_type->event_type.IsEtmEvent()) {
       // ETM recording has no sample frequency to adjust. Using sample frequency only wastes time
       // enabling/disabling etm devices. So don't adjust frequency by default.
       selection->event_attr.freq = 0;
@@ -272,6 +292,14 @@ bool EventSelectionSet::BuildAndCheckEventSelection(const std::string& event_nam
     // PMU events are provided by kernel, so they should be supported
     if (!event_type->event_type.IsPmuEvent() &&
         !IsEventAttrSupported(selection->event_attr, selection->event_type_modifier.name)) {
+      if (selection->event_attr.exclude_kernel == 0) {
+        selection->event_attr.exclude_kernel = 1;
+        if (IsEventAttrSupported(selection->event_attr, selection->event_type_modifier.name)) {
+          LOG(ERROR) << "Can't record kernel samples. Please try `-e " << event_type->name
+                     << ":u` instead.";
+          return false;
+        }
+      }
       LOG(ERROR) << "Event type '" << event_type->name << "' is not supported on the device";
       return false;
     }
@@ -314,7 +342,7 @@ bool EventSelectionSet::AddEventGroup(const std::vector<std::string>& event_name
     if (!BuildAndCheckEventSelection(event_name, first_event, &selection, check)) {
       return false;
     }
-    if (IsEtmEventType(selection.event_attr.type)) {
+    if (selection.event_type_modifier.event_type.IsEtmEvent()) {
       has_aux_trace_ = true;
     }
     if (first_in_group) {
@@ -819,7 +847,7 @@ bool EventSelectionSet::ApplyAddrFilters() {
 
   for (auto& group : groups_) {
     for (auto& selection : group.selections) {
-      if (IsEtmEventType(selection.event_type_modifier.event_type.type)) {
+      if (selection.event_type_modifier.event_type.IsEtmEvent()) {
         for (auto& event_fd : selection.event_fds) {
           if (!event_fd->SetFilter(filter_str)) {
             return false;
@@ -997,47 +1025,6 @@ bool EventSelectionSet::EnableETMEvents() {
       for (auto& fd : sel.event_fds) {
         if (!fd->SetEnableEvent(true)) {
           return false;
-        }
-      }
-    }
-  }
-  return true;
-}
-
-bool EventSelectionSet::DisableETMEvents() {
-  for (auto& group : groups_) {
-    for (auto& sel : group.selections) {
-      if (!sel.event_type_modifier.event_type.IsEtmEvent()) {
-        continue;
-      }
-      // When using ETR, ETM data is flushed to the aux buffer of the last cpu disabling ETM events.
-      // To avoid overflowing the aux buffer for one cpu, rotate the last cpu disabling ETM events.
-      if (etm_event_cpus_.empty()) {
-        for (const auto& fd : sel.event_fds) {
-          etm_event_cpus_.insert(fd->Cpu());
-        }
-        if (etm_event_cpus_.empty()) {
-          continue;
-        }
-        etm_event_cpus_it_ = etm_event_cpus_.begin();
-      }
-      int last_disabled_cpu = *etm_event_cpus_it_;
-      if (++etm_event_cpus_it_ == etm_event_cpus_.end()) {
-        etm_event_cpus_it_ = etm_event_cpus_.begin();
-      }
-
-      for (auto& fd : sel.event_fds) {
-        if (fd->Cpu() != last_disabled_cpu) {
-          if (!fd->SetEnableEvent(false)) {
-            return false;
-          }
-        }
-      }
-      for (auto& fd : sel.event_fds) {
-        if (fd->Cpu() == last_disabled_cpu) {
-          if (!fd->SetEnableEvent(false)) {
-            return false;
-          }
         }
       }
     }

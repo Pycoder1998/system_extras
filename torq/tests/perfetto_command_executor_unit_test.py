@@ -16,14 +16,13 @@
 
 import os
 import unittest
+import signal
 import subprocess
-import sys
-import io
 from unittest import mock
-from src.command import ProfilerCommand, ConfigCommand
+from src.command import ProfilerCommand
 from src.device import AdbDevice
 from src.validation_error import ValidationError
-from src.torq import DEFAULT_DUR_MS, DEFAULT_OUT_DIR, PREDEFINED_PERFETTO_CONFIGS
+from src.torq import DEFAULT_DUR_MS, DEFAULT_OUT_DIR
 
 PROFILER_COMMAND_TYPE = "profiler"
 TEST_ERROR_MSG = "test-error"
@@ -40,334 +39,6 @@ TEST_PACKAGE_3 = "test-package-3"
 TEST_DURATION = 0
 ANDROID_SDK_VERSION_S = 32
 ANDROID_SDK_VERSION_T = 33
-
-TEST_DEFAULT_CONFIG = f'''\
-buffers: {{
-  size_kb: 4096
-  fill_policy: RING_BUFFER
-}}
-buffers {{
-  size_kb: 4096
-  fill_policy: RING_BUFFER
-}}
-buffers: {{
-  size_kb: 260096
-  fill_policy: RING_BUFFER
-}}
-
-data_sources: {{
-  config {{
-    name: "linux.process_stats"
-    process_stats_config {{
-      scan_all_processes_on_start: true
-    }}
-  }}
-}}
-
-data_sources: {{
-  config {{
-    name: "android.log"
-    android_log_config {{
-    }}
-  }}
-}}
-
-data_sources {{
-  config {{
-    name: "android.packages_list"
-  }}
-}}
-
-data_sources: {{
-  config {{
-    name: "linux.sys_stats"
-    target_buffer: 1
-    sys_stats_config {{
-      stat_period_ms: 500
-      stat_counters: STAT_CPU_TIMES
-      stat_counters: STAT_FORK_COUNT
-      meminfo_period_ms: 1000
-      meminfo_counters: MEMINFO_ACTIVE_ANON
-      meminfo_counters: MEMINFO_ACTIVE_FILE
-      meminfo_counters: MEMINFO_INACTIVE_ANON
-      meminfo_counters: MEMINFO_INACTIVE_FILE
-      meminfo_counters: MEMINFO_KERNEL_STACK
-      meminfo_counters: MEMINFO_MLOCKED
-      meminfo_counters: MEMINFO_SHMEM
-      meminfo_counters: MEMINFO_SLAB
-      meminfo_counters: MEMINFO_SLAB_UNRECLAIMABLE
-      meminfo_counters: MEMINFO_VMALLOC_USED
-      meminfo_counters: MEMINFO_MEM_FREE
-      meminfo_counters: MEMINFO_SWAP_FREE
-      vmstat_period_ms: 1000
-      vmstat_counters: VMSTAT_PGFAULT
-      vmstat_counters: VMSTAT_PGMAJFAULT
-      vmstat_counters: VMSTAT_PGFREE
-      vmstat_counters: VMSTAT_PGPGIN
-      vmstat_counters: VMSTAT_PGPGOUT
-      vmstat_counters: VMSTAT_PSWPIN
-      vmstat_counters: VMSTAT_PSWPOUT
-      vmstat_counters: VMSTAT_PGSCAN_DIRECT
-      vmstat_counters: VMSTAT_PGSTEAL_DIRECT
-      vmstat_counters: VMSTAT_PGSCAN_KSWAPD
-      vmstat_counters: VMSTAT_PGSTEAL_KSWAPD
-      vmstat_counters: VMSTAT_WORKINGSET_REFAULT
-      cpufreq_period_ms: 500
-    }}
-  }}
-}}
-
-data_sources: {{
-  config {{
-    name: "android.surfaceflinger.frametimeline"
-    target_buffer: 2
-  }}
-}}
-
-data_sources: {{
-  config {{
-    name: "linux.ftrace"
-    target_buffer: 2
-    ftrace_config {{
-      ftrace_events: "dmabuf_heap/dma_heap_stat"
-      ftrace_events: "ftrace/print"
-      ftrace_events: "gpu_mem/gpu_mem_total"
-      ftrace_events: "ion/ion_stat"
-      ftrace_events: "kmem/ion_heap_grow"
-      ftrace_events: "kmem/ion_heap_shrink"
-      ftrace_events: "kmem/rss_stat"
-      ftrace_events: "lowmemorykiller/lowmemory_kill"
-      ftrace_events: "mm_event/mm_event_record"
-      ftrace_events: "oom/mark_victim"
-      ftrace_events: "oom/oom_score_adj_update"
-      ftrace_events: "power/cpu_frequency"
-      ftrace_events: "power/cpu_idle"
-      ftrace_events: "power/gpu_frequency"
-      ftrace_events: "power/suspend_resume"
-      ftrace_events: "power/wakeup_source_activate"
-      ftrace_events: "power/wakeup_source_deactivate"
-      ftrace_events: "sched/sched_blocked_reason"
-      ftrace_events: "sched/sched_process_exit"
-      ftrace_events: "sched/sched_process_free"
-      ftrace_events: "sched/sched_switch"
-      ftrace_events: "sched/sched_wakeup"
-      ftrace_events: "sched/sched_wakeup_new"
-      ftrace_events: "sched/sched_waking"
-      ftrace_events: "task/task_newtask"
-      ftrace_events: "task/task_rename"
-      ftrace_events: "vmscan/*"
-      ftrace_events: "workqueue/*"
-      atrace_categories: "aidl"
-      atrace_categories: "am"
-      atrace_categories: "dalvik"
-      atrace_categories: "binder_lock"
-      atrace_categories: "binder_driver"
-      atrace_categories: "bionic"
-      atrace_categories: "camera"
-      atrace_categories: "disk"
-      atrace_categories: "freq"
-      atrace_categories: "idle"
-      atrace_categories: "gfx"
-      atrace_categories: "hal"
-      atrace_categories: "input"
-      atrace_categories: "pm"
-      atrace_categories: "power"
-      atrace_categories: "res"
-      atrace_categories: "rro"
-      atrace_categories: "sched"
-      atrace_categories: "sm"
-      atrace_categories: "ss"
-      atrace_categories: "thermal"
-      atrace_categories: "video"
-      atrace_categories: "view"
-      atrace_categories: "wm"
-      atrace_apps: "lmkd"
-      atrace_apps: "system_server"
-      atrace_apps: "com.android.systemui"
-      atrace_apps: "com.google.android.gms"
-      atrace_apps: "com.google.android.gms.persistent"
-      atrace_apps: "android:ui"
-      atrace_apps: "com.google.android.apps.maps"
-      atrace_apps: "*"
-      buffer_size_kb: 16384
-      drain_period_ms: 150
-      symbolize_ksyms: true
-    }}
-  }}
-}}
-duration_ms: 10000
-write_into_file: true
-file_write_period_ms: 5000
-max_file_size_bytes: 100000000000
-flush_period_ms: 5000
-incremental_state_config {{
-  clear_period_ms: 5000
-}}
-'''
-
-TEST_DEFAULT_CONFIG_OLD_ANDROID = f'''\
-buffers: {{
-  size_kb: 4096
-  fill_policy: RING_BUFFER
-}}
-buffers {{
-  size_kb: 4096
-  fill_policy: RING_BUFFER
-}}
-buffers: {{
-  size_kb: 260096
-  fill_policy: RING_BUFFER
-}}
-
-data_sources: {{
-  config {{
-    name: "linux.process_stats"
-    process_stats_config {{
-      scan_all_processes_on_start: true
-    }}
-  }}
-}}
-
-data_sources: {{
-  config {{
-    name: "android.log"
-    android_log_config {{
-    }}
-  }}
-}}
-
-data_sources {{
-  config {{
-    name: "android.packages_list"
-  }}
-}}
-
-data_sources: {{
-  config {{
-    name: "linux.sys_stats"
-    target_buffer: 1
-    sys_stats_config {{
-      stat_period_ms: 500
-      stat_counters: STAT_CPU_TIMES
-      stat_counters: STAT_FORK_COUNT
-      meminfo_period_ms: 1000
-      meminfo_counters: MEMINFO_ACTIVE_ANON
-      meminfo_counters: MEMINFO_ACTIVE_FILE
-      meminfo_counters: MEMINFO_INACTIVE_ANON
-      meminfo_counters: MEMINFO_INACTIVE_FILE
-      meminfo_counters: MEMINFO_KERNEL_STACK
-      meminfo_counters: MEMINFO_MLOCKED
-      meminfo_counters: MEMINFO_SHMEM
-      meminfo_counters: MEMINFO_SLAB
-      meminfo_counters: MEMINFO_SLAB_UNRECLAIMABLE
-      meminfo_counters: MEMINFO_VMALLOC_USED
-      meminfo_counters: MEMINFO_MEM_FREE
-      meminfo_counters: MEMINFO_SWAP_FREE
-      vmstat_period_ms: 1000
-      vmstat_counters: VMSTAT_PGFAULT
-      vmstat_counters: VMSTAT_PGMAJFAULT
-      vmstat_counters: VMSTAT_PGFREE
-      vmstat_counters: VMSTAT_PGPGIN
-      vmstat_counters: VMSTAT_PGPGOUT
-      vmstat_counters: VMSTAT_PSWPIN
-      vmstat_counters: VMSTAT_PSWPOUT
-      vmstat_counters: VMSTAT_PGSCAN_DIRECT
-      vmstat_counters: VMSTAT_PGSTEAL_DIRECT
-      vmstat_counters: VMSTAT_PGSCAN_KSWAPD
-      vmstat_counters: VMSTAT_PGSTEAL_KSWAPD
-      vmstat_counters: VMSTAT_WORKINGSET_REFAULT
-
-    }}
-  }}
-}}
-
-data_sources: {{
-  config {{
-    name: "android.surfaceflinger.frametimeline"
-    target_buffer: 2
-  }}
-}}
-
-data_sources: {{
-  config {{
-    name: "linux.ftrace"
-    target_buffer: 2
-    ftrace_config {{
-      ftrace_events: "dmabuf_heap/dma_heap_stat"
-      ftrace_events: "ftrace/print"
-      ftrace_events: "gpu_mem/gpu_mem_total"
-      ftrace_events: "ion/ion_stat"
-      ftrace_events: "kmem/ion_heap_grow"
-      ftrace_events: "kmem/ion_heap_shrink"
-      ftrace_events: "kmem/rss_stat"
-      ftrace_events: "lowmemorykiller/lowmemory_kill"
-      ftrace_events: "mm_event/mm_event_record"
-      ftrace_events: "oom/mark_victim"
-      ftrace_events: "oom/oom_score_adj_update"
-      ftrace_events: "power/cpu_frequency"
-      ftrace_events: "power/cpu_idle"
-      ftrace_events: "power/gpu_frequency"
-      ftrace_events: "power/suspend_resume"
-      ftrace_events: "power/wakeup_source_activate"
-      ftrace_events: "power/wakeup_source_deactivate"
-      ftrace_events: "sched/sched_blocked_reason"
-      ftrace_events: "sched/sched_process_exit"
-      ftrace_events: "sched/sched_process_free"
-      ftrace_events: "sched/sched_switch"
-      ftrace_events: "sched/sched_wakeup"
-      ftrace_events: "sched/sched_wakeup_new"
-      ftrace_events: "sched/sched_waking"
-      ftrace_events: "task/task_newtask"
-      ftrace_events: "task/task_rename"
-      ftrace_events: "vmscan/*"
-      ftrace_events: "workqueue/*"
-      atrace_categories: "aidl"
-      atrace_categories: "am"
-      atrace_categories: "dalvik"
-      atrace_categories: "binder_lock"
-      atrace_categories: "binder_driver"
-      atrace_categories: "bionic"
-      atrace_categories: "camera"
-      atrace_categories: "disk"
-      atrace_categories: "freq"
-      atrace_categories: "idle"
-      atrace_categories: "gfx"
-      atrace_categories: "hal"
-      atrace_categories: "input"
-      atrace_categories: "pm"
-      atrace_categories: "power"
-      atrace_categories: "res"
-      atrace_categories: "rro"
-      atrace_categories: "sched"
-      atrace_categories: "sm"
-      atrace_categories: "ss"
-      atrace_categories: "thermal"
-      atrace_categories: "video"
-      atrace_categories: "view"
-      atrace_categories: "wm"
-      atrace_apps: "lmkd"
-      atrace_apps: "system_server"
-      atrace_apps: "com.android.systemui"
-      atrace_apps: "com.google.android.gms"
-      atrace_apps: "com.google.android.gms.persistent"
-      atrace_apps: "android:ui"
-      atrace_apps: "com.google.android.apps.maps"
-      atrace_apps: "*"
-      buffer_size_kb: 16384
-      drain_period_ms: 150
-      symbolize_ksyms: true
-    }}
-  }}
-}}
-duration_ms: 10000
-write_into_file: true
-file_write_period_ms: 5000
-max_file_size_bytes: 100000000000
-flush_period_ms: 5000
-incremental_state_config {{
-  clear_period_ms: 5000
-}}
-'''
 
 
 class ProfilerCommandExecutorUnitTest(unittest.TestCase):
@@ -388,6 +59,25 @@ class ProfilerCommandExecutorUnitTest(unittest.TestCase):
           as mock_open_trace):
       mock_open_trace.return_value = None
       self.command.use_ui = True
+      self.mock_device.start_perfetto_trace.return_value = mock_process
+
+      error = self.command.execute(self.mock_device)
+
+      self.assertEqual(error, None)
+      self.assertEqual(self.mock_device.pull_file.call_count, 1)
+
+  @mock.patch.object(subprocess, "Popen", autospec=True)
+  def test_execute_one_run_no_dur_ms_success(self, mock_process):
+    def poll():
+      # Send the SIGINT signal to the process to simulate a user pressing CTRL+C
+      os.kill(os.getpid(), signal.SIGINT)
+      return None
+
+    with (mock.patch("src.command_executor.open_trace", autospec=True)
+          as mock_open_trace):
+      self.command.dur_ms = None
+      mock_open_trace.return_value = None
+      mock_process.poll = poll
       self.mock_device.start_perfetto_trace.return_value = mock_process
 
       error = self.command.execute(self.mock_device)
@@ -462,16 +152,6 @@ class ProfilerCommandExecutorUnitTest(unittest.TestCase):
       self.command.execute(self.mock_device)
 
     self.assertEqual(str(e.exception), TEST_ERROR_MSG)
-    self.assertEqual(self.mock_device.pull_file.call_count, 0)
-
-  def test_execute_create_default_config_no_dur_ms_error(self):
-    self.command.dur_ms = None
-
-    with self.assertRaises(ValueError) as e:
-      self.command.execute(self.mock_device)
-
-    self.assertEqual(str(e.exception),
-                     "Cannot create config because a valid dur_ms was not set.")
     self.assertEqual(self.mock_device.pull_file.call_count, 0)
 
   def test_execute_create_default_config_bad_excluded_ftrace_event_error(self):
@@ -578,9 +258,9 @@ class ProfilerCommandExecutorUnitTest(unittest.TestCase):
     self.assertEqual(self.mock_device.pull_file.call_count, 0)
 
   @mock.patch.object(subprocess, "Popen", autospec=True)
-  def test_execute_process_wait_failure(self, mock_process):
+  def test_execute_process_poll_failure(self, mock_process):
     self.mock_device.start_perfetto_trace.return_value = mock_process
-    mock_process.wait.side_effect = TEST_EXCEPTION
+    mock_process.poll.side_effect = TEST_EXCEPTION
 
     with self.assertRaises(Exception) as e:
       self.command.execute(self.mock_device)
@@ -737,6 +417,7 @@ class BootCommandExecutorUnitTest(unittest.TestCase):
     self.mock_device = mock.create_autospec(AdbDevice, instance=True,
                                             serial=TEST_SERIAL)
     self.mock_device.check_device_connection.return_value = None
+    self.mock_device.is_package_running.return_value = False
     self.mock_device.get_android_sdk_version.return_value = ANDROID_SDK_VERSION_T
 
   def test_execute_reboot_success(self):
@@ -931,7 +612,7 @@ class AppStartupExecutorUnitTest(unittest.TestCase):
     self.assertEqual(self.mock_device.start_package.call_count, 1)
     self.assertEqual(self.mock_device.pull_file.call_count, 0)
 
-  def test_kill_pid_success(self):
+  def test_kill_process_success(self):
     self.mock_device.start_package.return_value = TEST_VALIDATION_ERROR
 
     error = self.command.execute(self.mock_device)
@@ -940,118 +621,20 @@ class AppStartupExecutorUnitTest(unittest.TestCase):
     self.assertEqual(error.message, TEST_ERROR_MSG)
     self.assertEqual(error.suggestion, None)
     self.assertEqual(self.mock_device.start_package.call_count, 1)
-    self.assertEqual(self.mock_device.kill_pid.call_count, 1)
+    self.assertEqual(self.mock_device.kill_process.call_count, 1)
     self.assertEqual(self.mock_device.pull_file.call_count, 0)
 
-  def test_kill_pid_failure(self):
+  def test_kill_process_failure(self):
     self.mock_device.start_package.return_value = TEST_VALIDATION_ERROR
-    self.mock_device.kill_pid.side_effect = TEST_EXCEPTION
+    self.mock_device.kill_process.side_effect = TEST_EXCEPTION
 
     with self.assertRaises(Exception) as e:
       self.command.execute(self.mock_device)
 
     self.assertEqual(str(e.exception), TEST_ERROR_MSG)
     self.assertEqual(self.mock_device.start_package.call_count, 1)
-    self.assertEqual(self.mock_device.kill_pid.call_count, 1)
+    self.assertEqual(self.mock_device.kill_process.call_count, 1)
     self.assertEqual(self.mock_device.pull_file.call_count, 0)
-
-
-class ConfigCommandExecutorUnitTest(unittest.TestCase):
-
-  def setUp(self):
-    self.mock_device = mock.create_autospec(AdbDevice, instance=True,
-                                            serial=TEST_SERIAL)
-    self.mock_device.check_device_connection.return_value = None
-    self.mock_device.get_android_sdk_version.return_value = (
-        ANDROID_SDK_VERSION_T)
-
-  @staticmethod
-  def generate_mock_completed_process(stdout_string=b'\n', stderr_string=b'\n'):
-    return mock.create_autospec(subprocess.CompletedProcess, instance=True,
-                                stdout=stdout_string, stderr=stderr_string)
-
-  def test_config_list(self):
-    terminal_output = io.StringIO()
-    sys.stdout = terminal_output
-
-    self.command = ConfigCommand("config list", None, None, None, None, None)
-    error = self.command.execute(self.mock_device)
-
-    self.assertEqual(error, None)
-    self.assertEqual(terminal_output.getvalue(), (
-        "%s\n" % "\n".join(list(PREDEFINED_PERFETTO_CONFIGS.keys()))))
-
-  def test_config_show(self):
-    terminal_output = io.StringIO()
-    sys.stdout = terminal_output
-
-    self.command = ConfigCommand("config show", "default", None, DEFAULT_DUR_MS,
-                                 None, None)
-    error = self.command.execute(self.mock_device)
-
-    self.assertEqual(error, None)
-    self.assertEqual(terminal_output.getvalue(), TEST_DEFAULT_CONFIG)
-
-  def test_config_show_no_device_connection(self):
-    self.mock_device.check_device_connection.return_value = (
-        TEST_VALIDATION_ERROR)
-    terminal_output = io.StringIO()
-    sys.stdout = terminal_output
-
-    self.command = ConfigCommand("config show", "default", None, DEFAULT_DUR_MS,
-                                 None, None)
-    error = self.command.execute(self.mock_device)
-
-    self.assertEqual(error, None)
-    self.assertEqual(terminal_output.getvalue(), TEST_DEFAULT_CONFIG)
-
-  def test_config_show_old_android_version(self):
-    self.mock_device.get_android_sdk_version.return_value = (
-        ANDROID_SDK_VERSION_S)
-    terminal_output = io.StringIO()
-    sys.stdout = terminal_output
-
-    self.command = ConfigCommand("config show", "default", None, DEFAULT_DUR_MS,
-                                 None, None)
-    error = self.command.execute(self.mock_device)
-
-    self.assertEqual(error, None)
-    self.assertEqual(terminal_output.getvalue(),
-                     TEST_DEFAULT_CONFIG_OLD_ANDROID)
-
-  @mock.patch.object(subprocess, "run", autospec=True)
-  def test_config_pull(self, mock_subprocess_run):
-    mock_subprocess_run.return_value = self.generate_mock_completed_process()
-    self.command = ConfigCommand("config pull", "default", None, DEFAULT_DUR_MS,
-                                 None, None)
-
-    error = self.command.execute(self.mock_device)
-
-    self.assertEqual(error, None)
-
-  @mock.patch.object(subprocess, "run", autospec=True)
-  def test_config_pull_no_device_connection(self, mock_subprocess_run):
-    self.mock_device.check_device_connection.return_value = (
-        TEST_VALIDATION_ERROR)
-    mock_subprocess_run.return_value = self.generate_mock_completed_process()
-    self.command = ConfigCommand("config pull", "default", None, DEFAULT_DUR_MS,
-                                 None, None)
-
-    error = self.command.execute(self.mock_device)
-
-    self.assertEqual(error, None)
-
-  @mock.patch.object(subprocess, "run", autospec=True)
-  def test_config_pull_old_android_version(self, mock_subprocess_run):
-    self.mock_device.get_android_sdk_version.return_value = (
-        ANDROID_SDK_VERSION_S)
-    mock_subprocess_run.return_value = self.generate_mock_completed_process()
-    self.command = ConfigCommand("config pull", "default", None, DEFAULT_DUR_MS,
-                                 None, None)
-
-    error = self.command.execute(self.mock_device)
-
-    self.assertEqual(error, None)
 
 
 if __name__ == '__main__':

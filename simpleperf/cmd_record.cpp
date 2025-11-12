@@ -593,6 +593,10 @@ bool RecordCommand::PrepareRecording(Workload* workload) {
         LOG(INFO) << "Hardware events are not available, switch to cpu-clock.";
       }
     }
+    if (!IsKernelEventSupported()) {
+      event_type += ":u";
+      LOG(INFO) << "Can't record kernel samples, switch to " << event_type;
+    }
     if (!event_selection_set_.AddEventType(event_type)) {
       return false;
     }
@@ -781,18 +785,6 @@ bool RecordCommand::PrepareRecording(Workload* workload) {
         return false;
       }
     }
-    // ETM data is dumped to kernel buffer only when there is no thread traced by ETM. It happens
-    // either when all monitored threads are scheduled off cpu, or when all etm perf events are
-    // disabled.
-    // If ETM data isn't dumped to kernel buffer in time, overflow parts will be dropped. This
-    // makes less than expected data, especially in system wide recording. So add a periodic event
-    // to flush etm data by temporarily disable all perf events.
-    auto etm_flush = [this]() {
-      return event_selection_set_.DisableETMEvents() && event_selection_set_.EnableETMEvents();
-    };
-    if (!loop->AddPeriodicEvent(SecondToTimeval(etm_flush_interval_.count() / 1000.0), etm_flush)) {
-      return false;
-    }
 
     if (etm_branch_list_generator_) {
       if (exclude_perf_) {
@@ -825,12 +817,6 @@ bool RecordCommand::DoRecording(Workload* workload) {
     return false;
   }
   time_stat_.stop_recording_time = GetSystemClock();
-  if (event_selection_set_.HasAuxTrace()) {
-    // Disable ETM events to flush the last ETM data.
-    if (!event_selection_set_.DisableETMEvents()) {
-      return false;
-    }
-  }
   if (!event_selection_set_.SyncKernelBuffer()) {
     return false;
   }
@@ -2163,6 +2149,9 @@ bool RecordCommand::DumpBuildIdFeature() {
   BuildId build_id;
   std::vector<Dso*> dso_v = thread_tree_.GetAllDsos();
   for (Dso* dso : dso_v) {
+    if (dso->type() == DSO_UNKNOWN_FILE) {
+      continue;
+    }
     // For aux tracing, we don't know which binaries are traced.
     // So dump build ids for all binaries.
     if (!dso->HasDumpId() && !event_selection_set_.HasAuxTrace()) {
@@ -2171,6 +2160,23 @@ bool RecordCommand::DumpBuildIdFeature() {
     if (GetBuildId(*dso, build_id)) {
       bool in_kernel = dso->type() == DSO_KERNEL || dso->type() == DSO_KERNEL_MODULE;
       build_id_records.emplace_back(in_kernel, UINT_MAX, build_id, dso->Path());
+    }
+  }
+  if (event_selection_set_.HasAuxTrace()) {
+    // If [vdso]->GetDebugFilePath() exists, copy it to "./vdso.so". If it does exist, the build id
+    // of [vdso] was read out from it, and [vdso] itself was already added to the vector in the loop
+    // above.
+    constexpr uint64_t force_64bit = (sizeof(size_t) == sizeof(uint64_t)) ? 1ULL << 32 : 1;
+    Dso* vdso = thread_tree_.FindUserDsoOrNew("[vdso]", force_64bit);
+    if (std::filesystem::exists(vdso->GetDebugFilePath())) {
+      std::string saved_vdso =
+          std::filesystem::absolute(android::base::Dirname(record_filename_) + "/vdso.so");
+      std::filesystem::copy_file(vdso->GetDebugFilePath(), saved_vdso,
+                                 std::filesystem::copy_options::overwrite_existing);
+      Dso* saved_vdso_dso = thread_tree_.FindUserDsoOrNew(saved_vdso, force_64bit);
+      if (GetBuildId(*saved_vdso_dso, build_id)) {
+        build_id_records.emplace_back(false, UINT_MAX, build_id, saved_vdso);
+      }
     }
   }
   if (!record_file_writer_->WriteBuildIdFeature(build_id_records)) {

@@ -737,32 +737,32 @@ class DeviceUnitTest(unittest.TestCase):
     self.assertEqual(str(e.exception), TEST_FAILURE_MSG)
 
   @mock.patch.object(subprocess, "run", autospec=True)
-  def test_kill_pid_success(self, mock_subprocess_run):
+  def test_kill_process_success(self, mock_subprocess_run):
     mock_subprocess_run.side_effect = [
         self.generate_mock_completed_process(TEST_PID_OUTPUT), None]
     adbDevice = AdbDevice(TEST_DEVICE_SERIAL)
 
     # No exception is expected to be thrown
-    adbDevice.kill_pid(TEST_PACKAGE_1)
+    adbDevice.kill_process(TEST_PACKAGE_1)
 
   @mock.patch.object(subprocess, "run", autospec=True)
-  def test_kill_pid_and_get_pid_failure(self, mock_subprocess_run):
+  def test_kill_process_and_get_pid_failure(self, mock_subprocess_run):
     mock_subprocess_run.side_effect = TEST_EXCEPTION
     adbDevice = AdbDevice(TEST_DEVICE_SERIAL)
 
     with self.assertRaises(Exception) as e:
-      adbDevice.kill_pid(TEST_PACKAGE_1)
+      adbDevice.kill_process(TEST_PACKAGE_1)
 
     self.assertEqual(str(e.exception), TEST_FAILURE_MSG)
 
   @mock.patch.object(subprocess, "run", autospec=True)
-  def test_kill_pid_failure(self, mock_subprocess_run):
+  def test_kill_process_failure(self, mock_subprocess_run):
     mock_subprocess_run.side_effect = [
         self.generate_mock_completed_process(TEST_PID_OUTPUT), TEST_EXCEPTION]
     adbDevice = AdbDevice(TEST_DEVICE_SERIAL)
 
     with self.assertRaises(Exception) as e:
-      adbDevice.kill_pid(TEST_PACKAGE_1)
+      adbDevice.kill_process(TEST_PACKAGE_1)
 
     self.assertEqual(str(e.exception), TEST_FAILURE_MSG)
 
@@ -883,6 +883,28 @@ class DeviceUnitTest(unittest.TestCase):
 
     self.assertEqual(error.message, "Simpleperf was not found in the device")
     self.assertEqual(error.suggestion, "Push the simpleperf binary to the device")
+
+  @mock.patch.object(subprocess, "run", autospec=True)
+  def test_file_exists_success(self, mock_subprocess_run):
+    mock_subprocess_run.return_value = (
+        self.generate_mock_completed_process(
+            b'',
+            b'')
+    )
+    adbDevice = AdbDevice(TEST_DEVICE_SERIAL)
+
+    self.assertEqual(adbDevice.file_exists("perfetto"), True)
+
+  @mock.patch.object(subprocess, "run", autospec=True)
+  def test_file_exists_failure(self, mock_subprocess_run):
+    mock_subprocess_run.return_value = (
+        self.generate_mock_completed_process(
+            b'',
+            b'ls: /data/misc: No such file or directory\n')
+    )
+    adbDevice = AdbDevice(TEST_DEVICE_SERIAL)
+
+    self.assertEqual(adbDevice.file_exists("perfetto"), False)
 
 if __name__ == '__main__':
   unittest.main()

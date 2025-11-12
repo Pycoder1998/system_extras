@@ -804,14 +804,14 @@ class RecordingAppHelper {
       return success;
     };
     ProcessSymbolsInPerfDataFile(GetDataPath(), callback);
-    size_t sample_count = GetSampleCount();
     if (!success) {
       if (IsInEmulator()) {
-        // In emulator, the monitored app may not have a chance to run.
+        // In emulator, the main thread of the monitored app may not have a chance to run.
         constexpr size_t MIN_SAMPLES_TO_CHECK_SYMBOLS = 1000;
-        if (size_t sample_count = GetSampleCount(); sample_count < MIN_SAMPLES_TO_CHECK_SYMBOLS) {
-          GTEST_LOG_(INFO) << "Only " << sample_count
-                           << " samples recorded in the emulator. Skip checking symbols (need "
+        if (size_t sample_count = GetMainThreadSampleCount();
+            sample_count < MIN_SAMPLES_TO_CHECK_SYMBOLS) {
+          GTEST_LOG_(INFO) << "Only " << sample_count << " samples recorded for the main thread in"
+                           << " the emulator. Skip checking symbols (need "
                            << MIN_SAMPLES_TO_CHECK_SYMBOLS << " samples).";
           return true;
         }
@@ -826,7 +826,7 @@ class RecordingAppHelper {
   std::string GetDataPath() const { return perf_data_file_.path; }
 
  private:
-  size_t GetSampleCount() {
+  size_t GetMainThreadSampleCount() {
     size_t sample_count = 0;
     std::unique_ptr<RecordFileReader> reader = RecordFileReader::CreateInstance(GetDataPath());
     if (!reader) {
@@ -834,7 +834,10 @@ class RecordingAppHelper {
     }
     auto process_record = [&](std::unique_ptr<Record> r) {
       if (r->type() == PERF_RECORD_SAMPLE) {
-        sample_count++;
+        auto sr = static_cast<SampleRecord*>(r.get());
+        if (sr->tid_data.pid == sr->tid_data.tid) {
+          sample_count++;
+        }
       }
       return true;
     };
@@ -1107,6 +1110,11 @@ TEST(record_cmd, cs_etm_event) {
   ASSERT_TRUE(has_auxtrace);
   ASSERT_TRUE(has_aux);
   ASSERT_TRUE(!reader->ReadBuildIdFeature().empty());
+  // Reset reader to avoid interfering with next event type detection for cs-etm/@tmc_etr0/.
+  reader.reset();
+
+  // We can explicitly use ETR. Because ETR is ready after CheckEtmSupport().
+  ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm/@tmc_etr0/"}, tmpfile.path));
 }
 
 // @CddTest = 6.1/C-0-2
@@ -1176,13 +1184,22 @@ TEST(record_cmd, addr_filter_option) {
       CreateCommandInstance("inject")->Run({"-i", record_file.path, "-o", inject_file.path}));
   std::string data;
   ASSERT_TRUE(android::base::ReadFileToString(inject_file.path, &data));
-  // Only instructions in sleep_exec_path are traced.
+  // Trace should ideally be limited to sleep_exec_path. However, due to potential early child
+  // command execution before filter setup, some other binary ETM data might exist. Thus, only
+  // checking for the presence of sleep_exec_path traces.
+  bool seen_sleep = false;
   for (auto& line : android::base::Split(data, "\n")) {
-    if (android::base::StartsWith(line, "dso ")) {
-      std::string dso = line.substr(strlen("dso "), sleep_exec_path.size());
-      ASSERT_EQ(dso, sleep_exec_path);
+    if (android::base::StartsWith(line, "// ")) {
+      if (android::base::StartsWith(line, "// build_id: ")) {
+        continue;
+      }
+      std::string dso = line.substr(strlen("// "), sleep_exec_path.size());
+      if (dso == sleep_exec_path) {
+        seen_sleep = true;
+      }
     }
   }
+  ASSERT_TRUE(seen_sleep);
 
   // Test if different filter types are accepted by the kernel.
   auto elf = ElfFile::Open(sleep_exec_path);
@@ -1265,6 +1282,29 @@ TEST(record_cmd, etm_flush_interval_option) {
     return;
   }
   ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm", "--etm-flush-interval", "10"}));
+}
+
+TEST(record_cmd, etm_uses_vdso) {
+  if (!ETMRecorder::GetInstance().CheckEtmSupport().ok()) {
+    GTEST_LOG_(INFO) << "Omit this test since etm isn't supported on this device";
+    return;
+  }
+  TemporaryFile record_file;
+  ASSERT_TRUE(RunRecordCmd({"-e", "cs-etm"}, record_file.path));
+  TemporaryFile inject_file;
+  ASSERT_TRUE(CreateCommandInstance("inject")->Run(
+      {"-i", record_file.path, "-o", inject_file.path, "--binary", "\\[vdso\\]"}));
+
+  std::string data;
+  ASSERT_TRUE(android::base::ReadFileToString(inject_file.path, &data));
+  bool seen_vdso = false;
+  for (auto& line : android::base::Split(data, "\n")) {
+    if ("// [vdso]" == line) {
+      seen_vdso = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(seen_vdso);
 }
 
 // @CddTest = 6.1/C-0-2

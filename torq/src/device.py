@@ -84,13 +84,13 @@ class AdbDevice:
       # Remove last \t
       options = options[:-1]
       chosen_serial = (HandleInput("There is more than one device currently "
-                                  "connected. Press the corresponding number "
-                                  "for the following options to choose the "
-                                  "device you want to use.\n\t%sSelect "
-                                  "device[0-%d]: "
-                                  % (options, len(devices) - 1),
-                                  "Please select a valid option.",
-                                  choices)
+                                   "connected. Press the corresponding number "
+                                   "for the following options to choose the "
+                                   "device you want to use.\n\t%sSelect "
+                                   "device[0-%d]: "
+                                   % (options, len(devices) - 1),
+                                   "Please select a valid option.",
+                                   choices)
                        .handle_input())
       if isinstance(chosen_serial, ValidationError):
         return chosen_serial
@@ -120,6 +120,11 @@ class AdbDevice:
   def remove_file(self, file_path):
     subprocess.run(["adb", "-s", self.serial, "shell", "rm", "-f", file_path])
 
+  def file_exists(self, file):
+    process = subprocess.run(["adb", "-s", self.serial, "shell", "ls",
+                              file], capture_output=True)
+    return not "No such file or directory" in process.stderr.decode("utf-8")
+
   def start_perfetto_trace(self, config):
     return subprocess.Popen(("adb -s %s shell perfetto -c - --txt -o"
                              " /data/misc/perfetto-traces/"
@@ -128,12 +133,14 @@ class AdbDevice:
 
   def start_simpleperf_trace(self, command):
     events_param = "-e " + ",".join(command.simpleperf_event)
+    duration = ""
+    if command.dur_ms is not None:
+      duration = "--duration %d" % int(math.ceil(command.dur_ms/1000))
     return subprocess.Popen(("adb -s %s shell simpleperf record -a -f 1000 "
                              "--exclude-perf --post-unwind=yes -m 8192 -g "
-                             "--duration %d %s -o %s"
-                             % (self.serial,
-                                int(math.ceil(command.dur_ms/1000)),
-                                events_param, SIMPLEPERF_TRACE_FILE)),
+                             "%s %s -o %s"
+                             % (self.serial, duration, events_param,
+                                SIMPLEPERF_TRACE_FILE)),
                             shell=True)
 
   def pull_file(self, file_path, host_file):
@@ -223,10 +230,14 @@ class AdbDevice:
                               % (package, self.serial, package)), None)
     return None
 
-  def kill_pid(self, package):
-    pid = self.get_pid(package)
+  def kill_process(self, name):
+    pid = self.get_pid(name)
     if pid != "":
       subprocess.run(["adb", "-s", self.serial, "shell", "kill", "-9", pid])
+
+  def send_signal(self, process_name, signal):
+    subprocess.run(["adb", "-s", self.serial, "shell", "pkill", "-l",
+                    signal, process_name])
 
   def force_stop_package(self, package):
     subprocess.run(["adb", "-s", self.serial, "shell", "am", "force-stop",

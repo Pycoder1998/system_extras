@@ -56,7 +56,7 @@ def create_parser():
                       default='perfetto', help='The performance data source.')
   profiler_parser.add_argument('-o', '--out-dir', default=DEFAULT_OUT_DIR,
                       help='The path to the output directory.')
-  profiler_parser.add_argument('-d', '--dur-ms', type=int, default=DEFAULT_DUR_MS,
+  profiler_parser.add_argument('-d', '--dur-ms', type=int,
                       help=('The duration (ms) of the event. Determines when'
                             ' to stop collecting performance data.'))
   profiler_parser.add_argument('-a', '--app',
@@ -110,7 +110,7 @@ def create_parser():
                                   choices=['lightweight', 'default', 'memory'],
                                   help=('Name of the predefined perfetto'
                                         ' config to print.'))
-  config_show_parser.add_argument('-d', '--dur-ms', type=int, default=DEFAULT_DUR_MS,
+  config_show_parser.add_argument('-d', '--dur-ms', type=int,
                       help=('The duration (ms) of the event. Determines when'
                             ' to stop collecting performance data.'))
   config_show_parser.add_argument('--excluded-ftrace-events', action='append',
@@ -131,7 +131,7 @@ def create_parser():
   config_pull_parser.add_argument('file_path', nargs='?',
                                   help=('File path to copy the predefined'
                                         ' config to'))
-  config_pull_parser.add_argument('-d', '--dur-ms', type=int, default=DEFAULT_DUR_MS,
+  config_pull_parser.add_argument('-d', '--dur-ms', type=int,
                       help=('The duration (ms) of the event. Determines when'
                             ' to stop collecting performance data.'))
   config_pull_parser.add_argument('--excluded-ftrace-events', action='append',
@@ -160,30 +160,13 @@ def create_parser():
 
   return parser
 
-
-def user_changed_default_arguments(args):
-  return any([args.event != "custom",
-              args.profiler != "perfetto",
-              args.out_dir != DEFAULT_OUT_DIR,
-              args.dur_ms != DEFAULT_DUR_MS,
-              args.app is not None,
-              args.runs != 1,
-              args.simpleperf_event is not None,
-              args.perfetto_config != "default",
-              args.between_dur_ms != DEFAULT_DUR_MS,
-              args.ui is not None,
-              args.excluded_ftrace_events is not None,
-              args.included_ftrace_events is not None,
-              args.from_user is not None,
-              args.to_user is not None])
-
 def verify_profiler_args(args):
   if args.out_dir != DEFAULT_OUT_DIR and not os.path.isdir(args.out_dir):
     return None, ValidationError(
         ("Command is invalid because --out-dir is not a valid directory"
          " path: %s." % args.out_dir), None)
 
-  if args.dur_ms < MIN_DURATION_MS:
+  if args.dur_ms is not None and args.dur_ms < MIN_DURATION_MS:
     return None, ValidationError(
         ("Command is invalid because --dur-ms cannot be set to a value smaller"
          " than %d." % MIN_DURATION_MS),
